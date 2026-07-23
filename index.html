@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>期权IV监控（双卖策略 · 静态快照）</title>
+    <!-- Vue 3 CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <!-- Element Plus CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <!-- Element Plus JS -->
+    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .btns {
+        margin-bottom: 10px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 10px;
+        background: #f5f7fa;
+      }
+      .btns span {
+        font-size: 13px;
+        color: #606266;
+      }
+      .data-source-tag {
+        background: #fdf6ec;
+        color: #e6a23c;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        border: 1px solid #faecd8;
+      }
+      th {
+        font-size: 10px;
+      }
+      .call {
+        background-color: #f6c4c5;
+      }
+      .put {
+        background-color: #c9f5aa;
+      }
+      .el-table .cell {
+        white-space: nowrap;
+        padding: 0 4px !important;
+        font-size: 11px;
+      }
+      .el-table th.el-table__cell,
+      .el-table td.el-table__cell {
+        padding: 2px 0 !important;
+      }
+      .el-table .el-table__header-wrapper th {
+        font-size: 10px;
+        line-height: 1.2;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="btns">
+        <el-button type="info" :loading="loadingData" @click="reloadData">重新加载</el-button>
+        <span>快照时间：{{ refreshTime || '-' }}</span>
+        <span class="data-source-tag">数据来源：天勤SDK（15分钟延时）· 静态快照（每日更新）</span>
+        <el-radio-group v-model="atrMode" size="small" @change="refreshTable">
+          <el-radio-button label="weekly">周ATR</el-radio-button>
+          <el-radio-button label="daily">日ATR</el-radio-button>
+        </el-radio-group>
+        <el-switch v-model="filterEnabled" active-text="筛选" inactive-text="全部" @change="reloadData" style="margin-left: 10px" />
+      </div>
+
+      <el-table :data="optionsInfo" :default-sort="{ prop: 'level', order: 'descending' }" size="small" border height="calc(100vh - 70px)">
+        <el-table-column prop="option_id" label="期权ID" width="95" :formatter="(row) => row.option_id.replace('I.F.', '')"></el-table-column>
+        <el-table-column prop="expire_rest_days" label="剩余交易日" sortable width="75"></el-table-column>
+        <el-table-column sortable prop="last_price" label="最新价" width="85" :formatter="fmt2f"></el-table-column>
+        <el-table-column sortable prop="atr" label="周ATR" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column sortable prop="daily_atr" label="日ATR" width="75" :formatter="fmt2f"></el-table-column>
+        <el-table-column prop="level" label="IV" sortable width="60"></el-table-column>
+
+        <!-- 看涨 -->
+        <el-table-column class-name="call" sortable prop="callStrikePrice" :label="atrMode === 'weekly' ? '看涨(周ATR)' : '看涨(日ATR)'" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callIntrinsicValue" label="看涨实际价值" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callIntrinsicPct" label="看涨占比" width="75" :formatter="fmt2fPct"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callPremiumPrice" label="看涨权利金" width="75" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callPremiumPct" label="看涨权利金占比" width="85" :formatter="fmt2fPct"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callPriceMonthRatio" label="看涨权利金月占比" width="90">
+          <template #default="scope">{{ Number.isFinite(scope.row.callPriceMonthRatio) ? scope.row.callPriceMonthRatio + ' %' : '-' }}</template>
+        </el-table-column>
+        <el-table-column class-name="call" sortable prop="callLossToProfitRatio" label="看涨亏盈比" width="75" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="call" sortable prop="callMargin" label="看涨保证金" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="call" sortable prop="CallYield" label="看涨收益率" width="80" :formatter="fmtYield"></el-table-column>
+
+        <!-- 看跌 -->
+        <el-table-column class-name="put" sortable prop="putStrikePrice" :label="atrMode === 'weekly' ? '看跌(周ATR)' : '看跌(日ATR)'" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putIntrinsicValue" label="看跌实际价值" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putIntrinsicPct" label="看跌占比" width="75" :formatter="fmt2fPct"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putPremiumPrice" label="看跌权利金" width="75" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putPremiumPct" label="看跌权利金占比" width="85" :formatter="fmt2fPct"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putPriceMonthRatio" label="看跌权利金月占比" width="90">
+          <template #default="scope">{{ Number.isFinite(scope.row.putPriceMonthRatio) ? scope.row.putPriceMonthRatio + ' %' : '-' }}</template>
+        </el-table-column>
+        <el-table-column class-name="put" sortable prop="putLossToProfitRatio" label="看跌亏盈比" width="75" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="put" sortable prop="putMargin" label="看跌保证金" width="80" :formatter="fmt2f"></el-table-column>
+        <el-table-column class-name="put" sortable prop="PutYield" label="看跌收益率" width="80" :formatter="fmtYield"></el-table-column>
+      </el-table>
+    </div>
+
+    <script>
+      const { createApp } = Vue;
+
+      createApp({
+        data() {
+          return {
+            loadingData: false,
+            optionsInfo: [],
+            refreshTime: '',
+            levelExpireConfigs: [],
+            atrMode: 'weekly',
+            filterEnabled: true,
+          };
+        },
+        methods: {
+          // 数值格式化（统一供表格排序使用）
+          fmt2f(row, col, val) {
+            return Number.isFinite(val) ? val.toFixed(2) : '-';
+          },
+          fmt2fPct(row, col, val) {
+            return Number.isFinite(val) ? val.toFixed(2) + ' %' : '-';
+          },
+          fmtYield(row, col, val) {
+            return Number.isFinite(val) ? (val * 100).toFixed(2) + ' %' : '-';
+          },
+
+          // 获取 Level 配置（静态版从本地 configs.json 读取）
+          async fetchConfigs() {
+            try {
+              const response = await fetch('./configs.json');
+              const data = await response.json();
+              this.levelExpireConfigs = data.data || [];
+            } catch (e) {
+              console.error('fetchConfigs:', e);
+              this.levelExpireConfigs = [];
+            }
+          },
+
+          // 前端筛选（逻辑与原后端 filter 一致）
+          passesFilter(item) {
+            if (!this.levelExpireConfigs.length) return true;
+            const level = item.level || 0;
+            const days = item.expire_rest_days || 0;
+            for (const cfg of this.levelExpireConfigs) {
+              const lmin = cfg.level_min ?? 0;
+              const lmax = cfg.level_max ?? 101;
+              const emin = cfg.expire_min_days ?? 0;
+              const emax = cfg.expire_max_days ?? 999;
+              if (lmin <= level && level < lmax && emin <= days && days <= emax) return true;
+            }
+            return false;
+          },
+
+          // 计算亏盈比
+          addYield(item) {
+            const atr = this.atrMode === 'weekly' ? item.atr : item.daily_atr;
+            const callPrice = item.call_strike_price?.price || 0;
+            const putPrice = item.put_strike_price?.price || 0;
+            item.callLossToProfitRatio = (atr > 0 && callPrice > 0)
+              ? Number((atr / callPrice).toFixed(2)) : 0;
+            item.putLossToProfitRatio = (atr > 0 && putPrice > 0)
+              ? Number((atr / putPrice).toFixed(2)) : 0;
+          },
+
+          // 看涨权利金月占比
+          addCallPriceMonthRatio(item) {
+            const price = item.call_strike_price?.price || 0;
+            item.callPriceMonthRatio = (price > 0 && item.last_price > 0 && item.expire_rest_days > 0)
+              ? Number((((price / item.last_price) * 100) / item.expire_rest_days * 30).toFixed(2)) : 0;
+          },
+
+          // 看跌权利金月占比
+          addPutPriceMonthRatio(item) {
+            const price = item.put_strike_price?.price || 0;
+            item.putPriceMonthRatio = (price > 0 && item.last_price > 0 && item.expire_rest_days > 0)
+              ? Number((((price / item.last_price) * 100) / item.expire_rest_days * 30).toFixed(2)) : 0;
+          },
+
+          // 添加看涨执行价（选取 last_price + ATR 附近最接近 target 的合约）
+          // 安全距离硬约束：CALL执行价必须 >= target（last_price + ATR）
+          addCallStrikePrice(item) {
+            const atr = this.atrMode === 'weekly' ? item.atr : item.daily_atr;
+            if (!atr || atr <= 0) {
+              item.call_strike_price = {};
+              return;
+            }
+            const target = item.last_price + atr;
+            const strike_prices = (item.options_strike_price || [])
+              .filter((a) => a.option_class === 'CALL' && a.price > 0)
+              .sort((a, b) => a.strike_price - b.strike_price);
+
+            // 安全距离约束：优先只保留执行价 >= target 的合约
+            const safe = strike_prices.filter((a) => a.strike_price >= target);
+            const pool = safe.length > 0 ? safe : strike_prices;
+
+            const choose_strike_price = pool.reduce((prev, cur) => {
+              const curDiff = Math.abs(target - cur.strike_price);
+              const lastDiff = Math.abs(target - prev.strike_price) || Infinity;
+              return curDiff < lastDiff ? cur : prev;
+            }, {});
+
+            item.call_strike_price = choose_strike_price;
+          },
+
+          // 添加看跌执行价（选取 last_price - ATR 附近最接近 target 的合约）
+          // 安全距离硬约束：PUT执行价必须 <= target（last_price - ATR）
+          addPutStrikePrice(item) {
+            const atr = this.atrMode === 'weekly' ? item.atr : item.daily_atr;
+            if (!atr || atr <= 0) {
+              item.put_strike_price = {};
+              return;
+            }
+            const target = item.last_price - atr;
+            const strike_prices = (item.options_strike_price || [])
+              .filter((a) => a.option_class === 'PUT' && a.price > 0)
+              .sort((a, b) => a.strike_price - b.strike_price);
+
+            // 安全距离约束：优先只保留执行价 <= target 的合约
+            const safe = strike_prices.filter((a) => a.strike_price <= target);
+            const pool = safe.length > 0 ? safe : strike_prices;
+
+            const choose_strike_price = pool.reduce((prev, cur) => {
+              const curDiff = Math.abs(target - cur.strike_price);
+              const lastDiff = Math.abs(target - prev.strike_price) || Infinity;
+              return curDiff < lastDiff ? cur : prev;
+            }, {});
+
+            item.put_strike_price = choose_strike_price;
+          },
+
+          // 保证金
+          calculateMargin(item) {
+            item.callMargin = item.margin;
+            item.putMargin = item.margin;
+          },
+
+          // 收益率 = 权利金 * 合约乘数 / 保证金 / 剩余时间 * 30
+          calculateYield(item) {
+            const callPrice = item.call_strike_price?.price || 0;
+            const putPrice = item.put_strike_price?.price || 0;
+            item.CallYield = (callPrice > 0 && item.callMargin > 0 && item.expire_rest_days > 0)
+              ? (callPrice * item.volume_multiple) / item.callMargin / item.expire_rest_days * 30 : 0;
+            item.PutYield = (putPrice > 0 && item.putMargin > 0 && item.expire_rest_days > 0)
+              ? (putPrice * item.volume_multiple) / item.putMargin / item.expire_rest_days * 30 : 0;
+          },
+
+          // 计算用于表格展示/排序的派生数字字段
+          addDerivedMetrics(item) {
+            const call = item.call_strike_price || {};
+            const put = item.put_strike_price || {};
+
+            item.callStrikePrice = call.strike_price || 0;
+            item.putStrikePrice = put.strike_price || 0;
+            item.callPremiumPrice = call.price || 0;
+            item.putPremiumPrice = put.price || 0;
+
+            item.callIntrinsicValue = call.strike_price ? call.strike_price - item.last_price : 0;
+            item.putIntrinsicValue = put.strike_price ? item.last_price - put.strike_price : 0;
+
+            item.callIntrinsicPct = item.last_price > 0
+              ? (item.callIntrinsicValue / item.last_price * 100) : 0;
+            item.putIntrinsicPct = item.last_price > 0
+              ? (item.putIntrinsicValue / item.last_price * 100) : 0;
+
+            item.callPremiumPct = (item.last_price > 0 && call.price)
+              ? (call.price / item.last_price * 100) : 0;
+            item.putPremiumPct = (item.last_price > 0 && put.price)
+              ? (put.price / item.last_price * 100) : 0;
+          },
+
+          // 切换ATR模式后刷新表格数据
+          refreshTable() {
+            this.optionsInfo.forEach((item) => {
+              const atr = this.atrMode === 'weekly' ? item.atr : item.daily_atr;
+              // ATR=0或缺失时，清空计算结果，跳过该品种
+              if (!atr || atr <= 0) {
+                item.call_strike_price = {};
+                item.put_strike_price = {};
+                item.callMargin = 0;
+                item.putMargin = 0;
+                item.CallYield = 0;
+                item.PutYield = 0;
+                item.callPriceMonthRatio = 0;
+                item.putPriceMonthRatio = 0;
+                item.callLossToProfitRatio = 0;
+                item.putLossToProfitRatio = 0;
+                item.callStrikePrice = 0;
+                item.putStrikePrice = 0;
+                item.callPremiumPrice = 0;
+                item.putPremiumPrice = 0;
+                item.callIntrinsicValue = 0;
+                item.putIntrinsicValue = 0;
+                item.callIntrinsicPct = 0;
+                item.putIntrinsicPct = 0;
+                item.callPremiumPct = 0;
+                item.putPremiumPct = 0;
+                return;
+              }
+              this.addCallStrikePrice(item);
+              this.addPutStrikePrice(item);
+              this.calculateMargin(item);
+              this.calculateYield(item);
+              this.addCallPriceMonthRatio(item);
+              this.addPutPriceMonthRatio(item);
+              this.addYield(item);
+              this.addDerivedMetrics(item);
+            });
+          },
+
+          // 获取期权数据（静态版从本地 options_info.json 读取）
+          async getOptionsInfo() {
+            try {
+              const response = await fetch('./options_info.json');
+              const data = await response.json();
+              // 快照时间（由导出脚本写入顶层字段）
+              if (data.snapshot_time) {
+                this.refreshTime = data.snapshot_time;
+              }
+              let optionsInfo = data.data || [];
+              // 前端筛选
+              if (this.filterEnabled) {
+                optionsInfo = optionsInfo.filter((it) => this.passesFilter(it));
+              }
+              this.optionsInfo = optionsInfo;
+              this.refreshTable();
+            } catch (e) {
+              console.error('getOptionsInfo:', e);
+              ElementPlus.ElMessage.error('获取期权数据失败（请确认 options_info.json 已生成）');
+            }
+          },
+
+          // 筛选开关切换时重新加载数据
+          async reloadData() {
+            await this.getOptionsInfo();
+          },
+        },
+
+        mounted() {
+          this.fetchConfigs();
+          this.getOptionsInfo();
+        },
+      })
+        .use(ElementPlus, { size: 'small' })
+        .mount('#app');
+    </script>
+  </body>
+</html>
