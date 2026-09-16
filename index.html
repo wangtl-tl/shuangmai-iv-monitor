@@ -36,6 +36,28 @@
         font-size: 12px;
         border: 1px solid #faecd8;
       }
+      .monitor-tag {
+        background: #ecf5ff;
+        color: #409eff;
+        padding: 2px 10px;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        border: 1px solid #d9ecff;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .monitor-tag:hover {
+        background: #d9ecff;
+      }
+      .monitor-tag .monitor-shown {
+        font-weight: 400;
+        color: #e6a23c;
+      }
+      .monitor-tag .monitor-warn {
+        font-weight: 400;
+        color: #f56c6c;
+      }
       th {
         font-size: 10px;
       }
@@ -66,12 +88,65 @@
         <el-button type="info" :loading="loadingData" @click="reloadData">重新加载</el-button>
         <span>快照时间：{{ refreshTime || '-' }}</span>
         <span class="data-source-tag">数据来源：天勤SDK（15分钟延时）· 静态快照（每日更新）</span>
+        <el-tooltip placement="bottom" effect="light">
+          <template #content>
+            <div style="max-width: 560px; line-height: 1.7">
+              <div><b>应监控 {{ monitorStats.configured_products }} 个品种</b> ｜ 当前有数据 <b>{{ monitorStats.total_products }}</b> 个 ｜ 合约 <b>{{ monitorStats.total_records }}</b> 条</div>
+              <div v-if="filterEnabled">当前「筛选」视图显示：<b>{{ monitorStats.shown_products }}</b> 个品种 / {{ monitorStats.shown_records }} 条</div>
+              <div v-if="filterEnabled" style="color:#909399">关闭筛选（切到"全部"）即可看到全部有数据品种</div>
+              <div v-if="monitorStats.missing && monitorStats.missing.length" style="color:#f56c6c">
+                无数据品种（{{ monitorStats.missing.length }} 个）：{{ monitorStats.missing.map(m => m.name + '(' + m.code + ')').join('、') }}
+              </div>
+              <div style="color:#909399; margin-top:4px">点击查看逐品种监控清单</div>
+            </div>
+          </template>
+          <span class="monitor-tag" @click="monitorDialogVisible = true">
+            监控品种 {{ monitorStats.total_products }}/{{ monitorStats.configured_products }} 个 · 合约 {{ monitorStats.total_records }} 条
+            <span v-if="filterEnabled" class="monitor-shown">（筛选显示 {{ monitorStats.shown_products }} 个 / {{ monitorStats.shown_records }} 条）</span>
+            <span v-if="monitorStats.missing && monitorStats.missing.length" class="monitor-warn">⚠ 无数据 {{ monitorStats.missing.length }} 个</span>
+          </span>
+        </el-tooltip>
         <el-radio-group v-model="atrMode" size="small" @change="refreshTable">
           <el-radio-button label="weekly">周ATR</el-radio-button>
           <el-radio-button label="daily">日ATR</el-radio-button>
         </el-radio-group>
         <el-switch v-model="filterEnabled" active-text="筛选" inactive-text="全部" @change="reloadData" style="margin-left: 10px" />
       </div>
+
+      <!-- 品种监控清单对话框 -->
+      <el-dialog v-model="monitorDialogVisible" title="品种监控清单" width="780px">
+        <div style="margin-bottom: 10px; font-size: 13px; color: #606266; line-height: 1.9">
+          应监控 <b style="color:#409eff">{{ monitorStats.configured_products }}</b> 个品种 ｜
+          当前有数据 <b style="color:#67c23a">{{ monitorStats.total_products }}</b> 个 ｜
+          合约 <b style="color:#67c23a">{{ monitorStats.total_records }}</b> 条 ｜
+          筛选中显示 <b style="color:#e6a23c">{{ monitorStats.shown_products }}</b> 个 / {{ monitorStats.shown_records }} 条
+          <span v-if="monitorStats.missing && monitorStats.missing.length" style="color:#f56c6c">
+            ｜ 无数据 <b>{{ monitorStats.missing.length }}</b> 个
+          </span>
+        </div>
+        <el-table :data="monitorList" size="small" border height="430">
+          <el-table-column prop="name" label="品种" width="110"></el-table-column>
+          <el-table-column prop="code" label="代码" width="80"></el-table-column>
+          <el-table-column prop="exchange" label="交易所" width="80"></el-table-column>
+          <el-table-column prop="records" label="合约数" width="80"></el-table-column>
+          <el-table-column label="数据状态" width="110">
+            <template #default="scope">
+              <el-tag v-if="scope.row.records > 0" type="success" size="small">正常</el-tag>
+              <el-tag v-else type="danger" size="small">无数据</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前视图" min-width="120">
+            <template #default="scope">
+              <span v-if="scope.row.records === 0" style="color:#c0c4cc">-</span>
+              <span v-else-if="scope.row.shown_records > 0" style="color:#67c23a">显示 {{ scope.row.shown_records }} 条</span>
+              <span v-else style="color:#e6a23c">被筛选隐藏</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div style="margin-top: 8px; font-size: 12px; color: #909399">
+          说明：「被筛选隐藏」= 该品种有数据，但 level/到期天数不落在任何配置档位内，关闭筛选即可看到；「无数据」= 数据源（天勤免费通道）未返回该品种行情。
+        </div>
+      </el-dialog>
 
       <el-table :data="optionsInfo" :default-sort="{ prop: 'level', order: 'descending' }" size="small" border height="calc(100vh - 70px)">
         <el-table-column prop="option_id" label="期权ID" width="95" :formatter="(row) => row.option_id.replace('I.F.', '')"></el-table-column>
@@ -121,7 +196,48 @@
             levelExpireConfigs: [],
             atrMode: 'weekly',
             filterEnabled: true,
+            // 品种监控统计（静态版由导出脚本写入 options_info.json 的 monitor 字段）
+            monitor: {
+              configured_products: 0,
+              total_products: 0,
+              total_records: 0,
+              missing: [],
+              present: [],
+            },
+            monitorDialogVisible: false,
           };
+        },
+        computed: {
+          // 监控统计：总量取自导出快照，当前视图数量按前端筛选结果实时统计
+          monitorStats() {
+            const m = this.monitor || {};
+            const shown = {};
+            (this.optionsInfo || []).forEach((it) => {
+              const p = (it.option_id || '').split('.');
+              if (p.length >= 5) shown[p[3]] = (shown[p[3]] || 0) + 1;
+            });
+            const shownCodes = Object.keys(shown);
+            return {
+              configured_products: m.configured_products || m.total_products || 0,
+              total_products: m.total_products || 0,
+              total_records: m.total_records || 0,
+              shown_products: shownCodes.length,
+              shown_records: (this.optionsInfo || []).length,
+              missing: m.missing || [],
+            };
+          },
+          // 逐品种清单：有数据 + 无数据，附带当前视图条数
+          monitorList() {
+            const m = this.monitor || {};
+            const shown = {};
+            (this.optionsInfo || []).forEach((it) => {
+              const p = (it.option_id || '').split('.');
+              if (p.length >= 5) shown[p[3]] = (shown[p[3]] || 0) + 1;
+            });
+            const present = (m.present || []).map((p) => ({ ...p, shown_records: shown[p.code] || 0 }));
+            const missing = (m.missing || []).map((x) => ({ ...x, records: 0, shown_records: 0 }));
+            return present.concat(missing);
+          },
         },
         methods: {
           // 数值格式化（统一供表格排序使用）
@@ -328,6 +444,7 @@
                 this.refreshTime = data.snapshot_time;
               }
               let optionsInfo = data.data || [];
+              if (data.monitor) this.monitor = data.monitor;
               // 前端筛选
               if (this.filterEnabled) {
                 optionsInfo = optionsInfo.filter((it) => this.passesFilter(it));
